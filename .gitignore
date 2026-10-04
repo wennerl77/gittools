@@ -1,0 +1,5 @@
+# Arquivos de teste e configuração local gerados pelo script
+.gitconfig
+
+# Arquivos temporários do OS
+.DS_Store

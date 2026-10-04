@@ -1,0 +1,327 @@
+#!/bin/bash
+
+# ==============================================================================
+# GitTools CLI
+# ==============================================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Suporte a Internacionalização (i18n) - Futuro
+LANG_OPT="pt-br"
+
+# Strings (pt-br)
+MSG_WELCOME="${CYAN}${BOLD}Bem-vindo ao GitTools CLI!${NC}"
+MSG_MENU_TITLE="Selecione uma opção usando as setas (↑/↓) e aperte Enter:"
+MSG_TEST_MODE="${YELLOW}[TESTE] MODO TESTE ATIVADO. Alterações restritas ao diretório atual.${NC}"
+MSG_NO_ALIASES_FILE="${RED}Arquivo de aliases não encontrado: %s${NC}\n"
+MSG_FOUND_EXISTING="${YELLOW}Você já possui aliases configurados no seu .gitconfig. Como deseja prosseguir?${NC}"
+MSG_CONFLICT_DETECTED="${YELLOW}Conflito no alias '%s'.${NC}\n  Seu comando:   ${CYAN}%s${NC}\n  Nosso comando: ${GREEN}%s${NC}\n"
+MSG_APPLYING="${GREEN}Aplicando alias:%s -> %s${NC}\n"
+MSG_SKIPPING="${YELLOW}Ignorando alias:%s${NC}\n"
+MSG_SUCCESS="${GREEN}${BOLD}Sucesso! Aliases configurados com sucesso.${NC}"
+MSG_CANCELLED="${RED}Operação cancelada.${NC}"
+
+TARGET_CONFIG="$HOME/.gitconfig"
+PREFIX=""
+TEST_MODE=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+ALIASES_FILE="$SCRIPT_DIR/aliases.ini"
+
+# Argument parsing
+if [[ "$1" == "--test" ]]; then
+    TEST_MODE=1
+    TARGET_CONFIG="$SCRIPT_DIR/.gitconfig"
+    PREFIX="${YELLOW}[TESTE]${NC} "
+    cp "$HOME/.gitconfig" "$TARGET_CONFIG" 2>/dev/null || touch "$TARGET_CONFIG"
+    echo -e "${MSG_TEST_MODE}"
+fi
+
+# Print helper
+log() {
+    echo -e "${PREFIX}$1"
+}
+
+log_printf() {
+    local fmt="$1"
+    shift
+    printf "${PREFIX}${fmt}" "$@"
+}
+
+# ------------------------------------------------------------------------------
+# TUI - Text User Interface
+# Navegação via setas
+# ------------------------------------------------------------------------------
+interactive_menu() {
+    local options=("$@")
+    local selected=0
+    
+    # Oculta o cursor
+    echo -en "\033[?25l"
+    
+    while true; do
+        # Imprime as opções
+        for i in "${!options[@]}"; do
+            if [[ $i -eq $selected ]]; then
+                echo -e "${PREFIX}  \033[1;36m> \033[7m ${options[$i]} \033[0m\033[K"
+            else
+                echo -e "${PREFIX}    ${options[$i]}\033[K"
+            fi
+        done
+        
+        # Lê a entrada silenciosamente
+        read -rsn1 key
+        if [[ $key == $'\e' ]]; then
+            read -rsn2 key2
+            if [[ $key2 == '[A' ]]; then # Cima
+                ((selected--))
+                [[ $selected -lt 0 ]] && selected=$((${#options[@]} - 1))
+            elif [[ $key2 == '[B' ]]; then # Baixo
+                ((selected++))
+                [[ $selected -ge ${#options[@]} ]] && selected=0
+            fi
+        elif [[ $key == "" ]]; then # Enter
+            break
+        fi
+        
+        # Move o cursor para cima para redesenhar
+        echo -en "\033[${#options[@]}A"
+    done
+    
+    # Mostra o cursor novamente
+    echo -en "\033[?25h"
+    
+    return $selected
+}
+
+# ------------------------------------------------------------------------------
+# Lógica Principal
+# ------------------------------------------------------------------------------
+apply_aliases() {
+    if [[ ! -f "$ALIASES_FILE" ]]; then
+        log_printf "$MSG_NO_ALIASES_FILE" "$ALIASES_FILE"
+        return 1
+    fi
+
+    local existing_aliases_count=$(git config -f "$TARGET_CONFIG" --get-regexp '^alias\.' 2>/dev/null | wc -l)
+    local strategy="m"
+
+    if (( existing_aliases_count > 0 )); then
+        log "$MSG_FOUND_EXISTING"
+        local conflict_opts=("Fazer Merge Inteligente (Recomendado)" "Substituir Todos (Rescrever)" "Cancelar Operação")
+        interactive_menu "${conflict_opts[@]}"
+        local choice=$?
+        
+        case "$choice" in
+            0) strategy="m" ;;
+            1) strategy="r" ;;
+            2) log "$MSG_CANCELLED"; return 0 ;;
+        esac
+    fi
+
+    if [[ "$strategy" == "r" ]]; then
+        git config -f "$TARGET_CONFIG" --remove-section alias 2>/dev/null
+    fi
+
+    # Lendo o arquivo INI nativamente pelo Git
+    local alias_keys=$(git config -f "$ALIASES_FILE" --name-only --get-regexp '^alias\..*\.command$')
+    
+    for key in $alias_keys; do
+        local tmp="${key#alias.}"
+        local alias_name="${tmp%.command}"
+        local alias_cmd=$(git config -f "$ALIASES_FILE" --get "$key")
+        
+        if [[ "$strategy" == "m" ]]; then
+            local existing_cmd=$(git config -f "$TARGET_CONFIG" --get "alias.${alias_name}" 2>/dev/null)
+            
+            if [[ -n "$existing_cmd" ]]; then
+                if [[ "$existing_cmd" == "$alias_cmd" ]]; then
+                    continue
+                else
+                    log_printf "$MSG_CONFLICT_DETECTED" "$alias_name" "$existing_cmd" "$alias_cmd"
+                    local alias_opts=("Substituir pelo Nosso" "Manter o Seu" "Cancelar Tudo")
+                    interactive_menu "${alias_opts[@]}"
+                    local choice=$?
+                    
+                    case "$choice" in
+                        0) 
+                            log_printf "$MSG_APPLYING" " $alias_name" "$alias_cmd"
+                            git config -f "$TARGET_CONFIG" alias."$alias_name" "$alias_cmd"
+                            ;;
+                        1) 
+                            log_printf "$MSG_SKIPPING" " $alias_name"
+                            ;;
+                        2) 
+                            log "$MSG_CANCELLED"; return 0 
+                            ;;
+                    esac
+                    continue
+                fi
+            fi
+        fi
+        
+        log_printf "$MSG_APPLYING" " $alias_name" "$alias_cmd"
+        git config -f "$TARGET_CONFIG" alias."$alias_name" "$alias_cmd"
+    done
+
+    log "$MSG_SUCCESS"
+}
+
+view_aliases() {
+    log "--- Seus Aliases ---"
+    local aliases=$(git config -f "$TARGET_CONFIG" --get-regexp '^alias\.' 2>/dev/null)
+    if [[ -z "$aliases" ]]; then
+        log "${YELLOW}Nenhum alias configurado.${NC}"
+    else
+        echo "$aliases" | sed 's/^alias\.//' | while read -r line; do
+            name="${line%% *}"
+            cmd="${line#* }"
+            printf "${CYAN}%-15s${NC} %s\n" "$name" "$cmd"
+        done
+    fi
+}
+
+add_alias() {
+    log "--- Adicionar Alias ---"
+    read -p "$(echo -e "${PREFIX}Nome do novo alias (ex: st): ")" alias_name
+    if [[ -z "$alias_name" ]]; then
+        log "$MSG_CANCELLED"
+        return
+    fi
+    
+    local existing=$(git config -f "$TARGET_CONFIG" --get "alias.$alias_name" 2>/dev/null)
+    if [[ -n "$existing" ]]; then
+        log "${YELLOW}O alias '$alias_name' já existe e seu comando é: $existing${NC}"
+        read -p "$(echo -e "${PREFIX}Deseja sobrescrever? (s/N): ")" confirm
+        if [[ ! "$confirm" =~ ^[Ss]$ ]]; then
+            log "$MSG_CANCELLED"
+            return
+        fi
+    fi
+    
+    read -p "$(echo -e "${PREFIX}Comando (sem o 'git' inicial): ")" alias_cmd
+    if [[ -z "$alias_cmd" ]]; then
+        log "$MSG_CANCELLED"
+        return
+    fi
+    
+    git config -f "$TARGET_CONFIG" alias."$alias_name" "$alias_cmd"
+    log "${GREEN}Alias '$alias_name' adicionado com sucesso!${NC}"
+}
+
+edit_alias() {
+    log "--- Editar Alias ---"
+    mapfile -t alias_names < <(git config -f "$TARGET_CONFIG" --name-only --get-regexp '^alias\.' 2>/dev/null | sed 's/^alias\.//')
+    if [[ ${#alias_names[@]} -eq 0 ]]; then
+        log "${YELLOW}Nenhum alias para editar.${NC}"
+        return
+    fi
+    
+    local options=("${alias_names[@]}" "Cancelar")
+    log "Selecione o alias que deseja editar:"
+    interactive_menu "${options[@]}"
+    local choice=$?
+    
+    if [[ $choice -eq $((${#options[@]} - 1)) ]]; then
+        log "$MSG_CANCELLED"
+        return
+    fi
+    
+    local alias_name="${options[$choice]}"
+    local current_cmd=$(git config -f "$TARGET_CONFIG" --get "alias.$alias_name" 2>/dev/null)
+    
+    log "Alias selecionado: ${CYAN}$alias_name${NC}"
+    
+    read -e -i "$current_cmd" -p "$(echo -e "${PREFIX}Novo comando: ")" new_cmd
+    
+    if [[ -z "$new_cmd" ]]; then
+        log "$MSG_CANCELLED"
+        return
+    fi
+    
+    if [[ "$new_cmd" != "$current_cmd" ]]; then
+        git config -f "$TARGET_CONFIG" alias."$alias_name" "$new_cmd"
+        log "${GREEN}Alias '$alias_name' atualizado com sucesso!${NC}"
+    else
+        log "${YELLOW}Nenhuma alteração feita.${NC}"
+    fi
+}
+
+remove_alias() {
+    log "--- Remover Alias ---"
+    mapfile -t alias_names < <(git config -f "$TARGET_CONFIG" --name-only --get-regexp '^alias\.' 2>/dev/null | sed 's/^alias\.//')
+    if [[ ${#alias_names[@]} -eq 0 ]]; then
+        log "${YELLOW}Nenhum alias para remover.${NC}"
+        return
+    fi
+    
+    local options=("${alias_names[@]}" "Cancelar")
+    log "Selecione o alias que deseja remover:"
+    interactive_menu "${options[@]}"
+    local choice=$?
+    
+    if [[ $choice -eq $((${#options[@]} - 1)) ]]; then
+        log "$MSG_CANCELLED"
+        return
+    fi
+    
+    local alias_name="${options[$choice]}"
+    
+    read -p "$(echo -e "${PREFIX}Tem certeza que deseja remover o alias '$alias_name'? (s/N): ")" confirm
+    if [[ "$confirm" =~ ^[Ss]$ ]]; then
+        git config -f "$TARGET_CONFIG" --unset "alias.$alias_name"
+        log "${GREEN}Alias '$alias_name' removido com sucesso!${NC}"
+    else
+        log "$MSG_CANCELLED"
+    fi
+}
+
+show_menu() {
+    local menu_opts=(
+        "Ver todos os Aliases"
+        "Adicionar Alias"
+        "Editar Alias"
+        "Remover Alias"
+        "Instalar Aliases Padrão"
+        "Sair"
+    )
+    
+    while true; do
+        clear
+        if [[ $TEST_MODE -eq 1 ]]; then
+            echo -e "${MSG_TEST_MODE}"
+        fi
+        
+        echo ""
+        log "$MSG_WELCOME"
+        log "$MSG_MENU_TITLE"
+        
+        interactive_menu "${menu_opts[@]}"
+        local choice=$?
+        
+        # Limpa o menu da tela para executar a ação em uma tela limpa
+        clear
+        if [[ $TEST_MODE -eq 1 ]]; then
+            echo -e "${MSG_TEST_MODE}"
+        fi
+        
+        case "$choice" in
+            0) view_aliases ;;
+            1) add_alias ;;
+            2) edit_alias ;;
+            3) remove_alias ;;
+            4) apply_aliases ;;
+            5) exit 0 ;;
+        esac
+        
+        echo ""
+        read -p "$(echo -e "${PREFIX}Pressione Enter para continuar...")"
+    done
+}
+
+show_menu
