@@ -1,0 +1,8 @@
+# Define quebra de linha padrao (LF) para scripts bash para evitar erros no Windows
+gittools text eol=lf
+aliases.ini text eol=lf
+*.sh text eol=lf
+
+# Mantém arquivos específicos do Windows como CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf

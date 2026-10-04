@@ -15,7 +15,9 @@ Uma ferramenta de linha de comando com uma Interface Interativa de Texto (TUI) p
 
 ## Como Usar
 
-Para executar o script de forma global, dê permissão de execução:
+### No Linux e macOS
+
+Dê permissão de execução ao script:
 
 ```bash
 chmod +x gittools
@@ -26,6 +28,21 @@ Execute a ferramenta:
 ```bash
 ./gittools
 ```
+
+### No Windows
+
+Se você possui o [Git for Windows](https://gitforwindows.org/) instalado, basta executar a ferramenta no seu Prompt de Comando (CMD) ou PowerShell:
+
+Pelo CMD:
+```cmd
+gittools
+```
+
+Pelo PowerShell:
+```powershell
+.\gittools.ps1
+```
+*(Opcionalmente, no PowerShell, se a execução de scripts estiver bloqueada, pode ser necessário rodar `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` antes da execução).*
 
 ### Modo de Teste
 
